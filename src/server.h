@@ -4,6 +4,7 @@
 #include "threadpool.h"
 
 #include <limits.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 
 /* Seconds a client may stay idle while sending its request or reading our reply. */
@@ -17,11 +18,19 @@ typedef struct {
     char docroot[PATH_MAX];     /* realpath() of the document root, resolved once */
 } server_config_t;
 
+/* Updated by many threads at once, so they are C11 atomics, not plain counters. */
+typedef struct {
+    atomic_ulong served;        /* 200 responses */
+    atomic_ulong rejected;      /* 503s from a full queue (load shedding) */
+    atomic_ulong errors;        /* other error responses (4xx/5xx) */
+} server_stats_t;
+
 typedef struct {
     server_config_t cfg;
     int listen_fd;
     job_queue_t queue;
     thread_pool_t pool;
+    server_stats_t stats;
 } server_t;
 
 /* Create a TCP socket listening on 0.0.0.0:port. Returns the fd, or -1. */
