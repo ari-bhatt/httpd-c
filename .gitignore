@@ -1,0 +1,14 @@
+# Build outputs
+httpd
+test_http
+*.o
+*.dSYM/
+
+# Generated large test file (create with: head -c 1048576 /dev/urandom > www/big.bin)
+www/big.bin
+
+# Editor / OS junk
+.vscode/
+.idea/
+*.swp
+.DS_Store
