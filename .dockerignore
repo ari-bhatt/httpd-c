@@ -1,0 +1,7 @@
+.git
+.github
+httpd
+test_http
+bench
+www/big.bin
+*.md

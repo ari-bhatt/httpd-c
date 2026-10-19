@@ -22,7 +22,10 @@ tsan: clean httpd
 test: $(SRC) $(HDR) tests/test_http.c
 	$(CC) $(CFLAGS) $(filter %.c,$^) -o test_http $(LDFLAGS) && ./test_http
 
+smoke: httpd
+	bash tests/smoke.sh
+
 clean:
 	rm -f httpd test_http
 
-.PHONY: all asan tsan test clean
+.PHONY: all asan tsan test smoke clean
