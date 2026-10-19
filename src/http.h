@@ -35,4 +35,14 @@ int http_send_headers(int fd, int status, const char *content_type,
 /* Send an error response with a small HTML body. Returns body bytes sent, or -1. */
 long long http_send_error(int fd, int status, bool head);
 
+/*
+ * Serve the file named by req->path from inside docroot (a realpath()-resolved
+ * directory). Directories serve their index.html.
+ *
+ * Returns 200 once headers have been sent (*bytes = body bytes actually sent),
+ * or an error status (403, 404, 414, 500) if nothing was sent and the caller
+ * should send an error response.
+ */
+int http_serve_file(int fd, const char *docroot, const http_request_t *req, long long *bytes);
+
 #endif

@@ -1,6 +1,5 @@
 #include "server.h"
 #include "http.h"
-#include "util.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -42,10 +41,9 @@ int server_listen(int port) {
 }
 
 void server_handle_connection(server_t *srv, int fd) {
-    (void)srv;                                  /* docroot is used once files are served */
-
     char raw[MAX_REQ + 1];
     http_request_t req = {0};
+    long long bytes = 0;
     int status;
 
     int rc = read_request(fd, raw);
@@ -55,15 +53,8 @@ void server_handle_connection(server_t *srv, int fd) {
     } else if (rc == READ_TOO_LARGE) {
         status = 431;
     } else if ((status = http_parse(raw, &req)) == 0) {
-        /* Temporary: echo the parsed request until file serving is added. */
-        char body[1200];
-        int len = snprintf(body, sizeof body, "httpd-c parsed: %s %s %s\n",
-                           req.method, req.path, req.version);
-        if (len < 0) return;
-        if ((size_t)len >= sizeof body) len = (int)sizeof body - 1;
-        if (http_send_headers(fd, 200, "text/plain; charset=utf-8", len, NULL) == 0 && !req.head)
-            write_all(fd, body, (size_t)len);
-        return;
+        status = http_serve_file(fd, srv->cfg.docroot, &req, &bytes);
+        if (status == 200) return;                       /* response already sent */
     }
     http_send_error(fd, status, req.head);
 }

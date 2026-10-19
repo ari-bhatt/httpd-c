@@ -2,9 +2,15 @@
 #include "util.h"
 
 #include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/sendfile.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 int read_request(int fd, char *buf) {
     /* TCP is a byte stream: one recv() may return only part of the request. */
@@ -124,4 +130,99 @@ long long http_send_error(int fd, int status, bool head) {
     if (http_send_headers(fd, status, "text/html; charset=utf-8", len, extra) < 0) return -1;
     if (head) return 0;                                    /* HEAD: headers only */
     return write_all(fd, body, (size_t)len) < 0 ? -1 : len;
+}
+
+/*
+ * Resolve docroot + path with realpath() and make sure the result is still inside
+ * docroot. realpath() collapses "..", "." and symlinks, so "/../../etc/passwd"
+ * (or its URL-encoded form, already decoded by the parser) resolves to
+ * "/etc/passwd" and fails the containment check.
+ * Returns 0 and fills out (PATH_MAX bytes), or an HTTP status.
+ */
+static int resolve_inside(const char *docroot, const char *path, char *out) {
+    char full[PATH_MAX];
+    int n = snprintf(full, sizeof full, "%s%s", docroot, path);
+    if (n < 0 || (size_t)n >= sizeof full) return 414;
+
+    if (realpath(full, out) == NULL) {
+        if (errno == EACCES) return 403;
+        return 404;                                        /* ENOENT, ENOTDIR, ... */
+    }
+
+    size_t root_len = strlen(docroot);
+    if (root_len == 1) return 0;                           /* docroot is "/" itself */
+    /* The boundary check matters: "/var/www-secret" starts with "/var/www". */
+    if (strncmp(out, docroot, root_len) != 0 ||
+        (out[root_len] != '/' && out[root_len] != '\0'))
+        return 403;
+    return 0;
+}
+
+/* Open a resolved path. O_NONBLOCK keeps a FIFO in the docroot from hanging open(). */
+static int open_file(const char *path, int *file_fd, struct stat *st) {
+    *file_fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (*file_fd < 0) {
+        if (errno == EACCES) return 403;
+        if (errno == ENOENT || errno == ENOTDIR) return 404;
+        return 500;
+    }
+    /* fstat on the open fd, not stat on the path: the file can't change between
+       the check and the read. */
+    if (fstat(*file_fd, st) < 0) {
+        close(*file_fd);
+        return 500;
+    }
+    return 0;
+}
+
+int http_serve_file(int fd, const char *docroot, const http_request_t *req, long long *bytes) {
+    char resolved[PATH_MAX];
+    struct stat st;
+    int file_fd;
+    int status;
+
+    *bytes = 0;
+
+    if ((status = resolve_inside(docroot, req->path, resolved)) != 0) return status;
+    if ((status = open_file(resolved, &file_fd, &st)) != 0) return status;
+
+    if (S_ISDIR(st.st_mode)) {
+        /* Directories serve their index.html. Resolve again in case index.html is
+           a symlink pointing outside the docroot. */
+        close(file_fd);
+        char index_path[PATH_MAX];
+        int n = snprintf(index_path, sizeof index_path, "%s/index.html",
+                         resolved + strlen(docroot));
+        if (n < 0 || (size_t)n >= sizeof index_path) return 414;
+        if ((status = resolve_inside(docroot, index_path, resolved)) != 0) return status;
+        if ((status = open_file(resolved, &file_fd, &st)) != 0) return status;
+    }
+
+    if (!S_ISREG(st.st_mode)) {                            /* devices, sockets, FIFOs... */
+        close(file_fd);
+        return 403;
+    }
+
+    if (http_send_headers(fd, 200, mime_type(resolved), (long long)st.st_size, NULL) < 0) {
+        close(file_fd);
+        return 200;                                        /* client is gone; nothing to add */
+    }
+
+    if (!req->head) {
+        /* Zero-copy: the kernel moves file pages straight to the socket, with no
+           read() into a user-space buffer. sendfile may send less than asked, so loop. */
+        off_t off = 0;
+        while (off < st.st_size) {
+            ssize_t n = sendfile(fd, file_fd, &off, (size_t)(st.st_size - off));
+            if (n < 0) {
+                if (errno == EINTR) continue;
+                break;                                     /* client gone or send timeout */
+            }
+            if (n == 0) break;                             /* file shrank underneath us */
+        }
+        *bytes = (long long)off;
+    }
+
+    close(file_fd);                                        /* every path closes the fd */
+    return 200;
 }

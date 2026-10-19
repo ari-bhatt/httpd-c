@@ -17,4 +17,7 @@ int url_decode(const char *src, char *dst, size_t dstsz);
 /* Current time as an HTTP date, e.g. "Mon, 19 Oct 2026 04:00:00 GMT". */
 void format_http_date(char *buf, size_t n);
 
+/* Content-Type for a file path, chosen by extension (case-insensitive). */
+const char *mime_type(const char *path);
+
 #endif

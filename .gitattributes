@@ -1,0 +1,8 @@
+# Keep LF line endings everywhere, even when cloned on Windows.
+# CRLF would break the Makefile and shell scripts when run in WSL/Linux.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.bin binary
