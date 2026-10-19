@@ -1,3 +1,4 @@
+#include "http.h"
 #include "server.h"
 
 #include <errno.h>
@@ -8,6 +9,7 @@
 #include <stdlib.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 static void usage(const char *prog) {
@@ -81,20 +83,44 @@ int main(int argc, char **argv) {
     srv.listen_fd = server_listen(srv.cfg.port);
     if (srv.listen_fd < 0) return 1;
 
-    fprintf(stderr, "httpd-c listening on 0.0.0.0:%d (docroot %s)\n",
-            srv.cfg.port, srv.cfg.docroot);
+    if (queue_init(&srv.queue, (size_t)srv.cfg.queue_cap) < 0) {
+        fprintf(stderr, "failed to allocate job queue\n");
+        return 1;
+    }
+    if (pool_start(&srv.pool, (size_t)srv.cfg.threads, &srv.queue,
+                   server_handle_connection, &srv) < 0) {
+        fprintf(stderr, "failed to start worker threads\n");
+        return 1;
+    }
 
-    /* Single-threaded baseline: accept, handle, close, repeat. */
+    fprintf(stderr, "httpd-c listening on 0.0.0.0:%d (docroot %s, %zu threads, queue %d)\n",
+            srv.cfg.port, srv.cfg.docroot, srv.pool.nthreads, srv.cfg.queue_cap);
+
+    /*
+     * Producer side: the main thread only accepts connections and hands them to
+     * the workers. If the queue is full, the server is overloaded: answer 503
+     * right away instead of letting work and latency pile up (load shedding).
+     */
     for (;;) {
-        struct sockaddr_in client;
-        socklen_t len = sizeof client;
-        int fd = accept(srv.listen_fd, (struct sockaddr *)&client, &len);
-        if (fd < 0) {
+        job_t job;
+        socklen_t len = sizeof job.addr;
+        job.fd = accept(srv.listen_fd, (struct sockaddr *)&job.addr, &len);
+        if (job.fd < 0) {
             if (errno == EINTR) continue;
             perror("accept");
+            if (errno == EMFILE || errno == ENFILE) {
+                /* Out of file descriptors: back off briefly instead of spinning. */
+                struct timespec pause = { .tv_sec = 0, .tv_nsec = 10 * 1000 * 1000 };
+                nanosleep(&pause, NULL);
+            }
             continue;
         }
-        server_handle_connection(&srv, fd);
-        close(fd);
+        clock_gettime(CLOCK_MONOTONIC, &job.accepted_at);
+        server_set_timeouts(job.fd, CLIENT_TIMEOUT_SECS);
+
+        if (!queue_try_push(&srv.queue, job)) {
+            http_send_error(job.fd, 503, false);
+            close(job.fd);
+        }
     }
 }

@@ -5,6 +5,7 @@
 #include <netinet/in.h>
 #include <stdio.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 int server_listen(int port) {
@@ -40,7 +41,20 @@ int server_listen(int port) {
     return fd;
 }
 
-void server_handle_connection(server_t *srv, int fd) {
+void server_set_timeouts(int fd, int secs) {
+    /* Without these, a client that connects and sends nothing would pin a worker
+       forever; a few hundred of them (a "Slowloris" attack) would freeze the pool.
+       After a receive timeout, recv() fails with EAGAIN, which becomes a 408. */
+    struct timeval tv = { .tv_sec = secs, .tv_usec = 0 };
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv) < 0)
+        perror("setsockopt(SO_RCVTIMEO)");
+    if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv) < 0)
+        perror("setsockopt(SO_SNDTIMEO)");
+}
+
+void server_handle_connection(void *ctx, const job_t *job) {
+    server_t *srv = ctx;
+    int fd = job->fd;
     char raw[MAX_REQ + 1];
     http_request_t req = {0};
     long long bytes = 0;
