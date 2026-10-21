@@ -1,6 +1,5 @@
 # httpd-c
 
-[![CI](https://github.com/cetari26/httpd-c/actions/workflows/ci.yml/badge.svg)](https://github.com/cetari26/httpd-c/actions/workflows/ci.yml)
 
 A multithreaded HTTP/1.1 static-file server written in C, built on a fixed POSIX thread pool with a bounded job queue that sheds load with `503` instead of collapsing under overload.
 
